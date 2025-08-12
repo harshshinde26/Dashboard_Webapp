@@ -1,0 +1,118 @@
+trigger:
+- main
+
+variables:
+  pythonVersion: '3.11'
+  nodeVersion: '18.x'
+  # Replace with your Azure DevOps service connection name
+  azureServiceConnection: 'YOUR_AZURE_SERVICE_CONNECTION'
+  # Replace with your Azure Web App name
+  webAppName: 'YOUR_WEBAPP_NAME'
+  # Replace with a securely stored variable group/variable in library
+  djangoSecretKey: '$(DJANGO_SECRET_KEY)'
+
+stages:
+- stage: Build
+  displayName: Build and Package
+  jobs:
+  - job: Build
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+
+    - task: UsePythonVersion@0
+      displayName: 'Use Python $(pythonVersion)'
+      inputs:
+        versionSpec: '$(pythonVersion)'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install Python dependencies'
+
+    - task: NodeTool@0
+      displayName: 'Use Node.js $(nodeVersion)'
+      inputs:
+        versionSpec: '$(nodeVersion)'
+
+    - script: |
+        cd frontend
+        npm ci
+        npm run build
+      displayName: 'Build frontend (React)'
+
+    - script: |
+        mkdir -p backend/dashboard_app/static/frontend
+        cp -R frontend/build/* backend/dashboard_app/static/frontend/
+      displayName: 'Copy frontend build into Django static'
+
+    - script: |
+        cd backend
+        python manage.py collectstatic --noinput
+      displayName: 'Django collectstatic'
+
+    - script: |
+        cp requirements.txt backend/requirements.txt
+      displayName: 'Copy requirements.txt into backend package root'
+
+    - task: CopyFiles@2
+      displayName: 'Stage backend for packaging (exclude venv)'
+      inputs:
+        SourceFolder: 'backend'
+        Contents: |
+          **
+          !venv/**
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/site'
+
+    - task: ArchiveFiles@2
+      displayName: 'Archive backend for deployment'
+      inputs:
+        rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/site'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/webapp.zip'
+        replaceExistingArchive: true
+
+    - publish: '$(Build.ArtifactStagingDirectory)/webapp.zip'
+      artifact: drop
+      displayName: 'Publish artifact'
+
+- stage: Deploy
+  displayName: Deploy to Azure Web App
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployWeb
+    displayName: Deploy Web App
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureAppServiceSettings@1
+            displayName: 'Set App Settings (SCM build, Django)'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              appName: '$(webAppName)'
+              appSettings: |
+                [
+                  { "name": "SCM_DO_BUILD_DURING_DEPLOYMENT", "value": "true", "slotSetting": false },
+                  { "name": "DJANGO_DEBUG", "value": "false", "slotSetting": false },
+                  { "name": "DJANGO_ALLOWED_HOSTS", "value": "$(webAppName).azurewebsites.net", "slotSetting": false },
+                  { "name": "DJANGO_SECRET_KEY", "value": "$(djangoSecretKey)", "slotSetting": false },
+                  { "name": "DJANGO_CSRF_TRUSTED_ORIGINS", "value": "https://$(webAppName).azurewebsites.net", "slotSetting": false }
+                ]
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              appType: 'webAppLinux'
+              appName: '$(webAppName)'
+              package: '$(Pipeline.Workspace)/drop/webapp.zip'
+              runtimeStack: 'PYTHON|3.11'
+              startUpCommand: 'python manage.py migrate && python manage.py collectstatic --noinput && gunicorn dashboard_project.wsgi --bind=0.0.0.0:8000' 
