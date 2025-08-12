@@ -1,0 +1,30 @@
+# Requirements for Python 3.13+
+# Use this file if you encounter issues with the main requirements.txt
+
+Django>=4.2,<5.0
+djangorestframework>=3.14.0
+django-cors-headers>=4.0.0
+
+# Data processing - use pre-releases for Python 3.13 compatibility
+--pre
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Excel handling
+openpyxl>=3.1.0
+xlsxwriter>=3.0.0
+
+# Date handling
+python-dateutil>=2.8.0
+
+# Django filters
+django-filter>=23.0
+
+# Image processing - may need pre-release for Python 3.13
+Pillow>=10.0.0
+
+# Timezone handling
+pytz>=2023.3
+
+# HTTP requests
+requests>=2.31.0 
