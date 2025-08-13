@@ -43,11 +43,20 @@ jobs:
           npm ci
           npm run build
 
-      - name: Copy frontend build into Django static directory
+      - name: Copy frontend build into Django (templates and static)
         run: |
-          rm -rf backend/dashboard_app/static/frontend || true
-          mkdir -p backend/dashboard_app/static/frontend
-          cp -R frontend/build/* backend/dashboard_app/static/frontend/
+          # Templates
+          mkdir -p backend/dashboard_project/templates
+          cp frontend/build/index.html backend/dashboard_project/templates/index.html
+          # Static assets (js/css/media)
+          rm -rf backend/dashboard_app/static/* || true
+          mkdir -p backend/dashboard_app/static
+          cp -R frontend/build/static/* backend/dashboard_app/static/
+          # Optional root assets referenced by CRA
+          cp -f frontend/build/favicon.ico backend/dashboard_app/static/ 2>/dev/null || true
+          cp -f frontend/build/manifest.json backend/dashboard_app/static/ 2>/dev/null || true
+          cp -f frontend/build/logo192.png backend/dashboard_app/static/ 2>/dev/null || true
+          cp -f frontend/build/logo512.png backend/dashboard_app/static/ 2>/dev/null || true
       
       - name: Collect static files
         run: |
