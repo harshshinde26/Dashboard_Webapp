@@ -63,3 +63,4 @@ jobs:
           app-name: 'CTS-VibeAppce2201-3'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_1A71ACE07424477E8E1A7269ECE0301A }}
+          package: 'python-app'
