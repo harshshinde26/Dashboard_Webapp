@@ -6,34 +6,198 @@ pool:
 
 variables:
   pythonVersion: '3.11'
+  nodeVersion: '18.x'
+  backendPath: 'backend'
+  frontendPath: 'frontend'
 
-steps:
-- checkout: self
+stages:
+- stage: Build
+  displayName: 'Build Applications'
+  jobs:
+  - job: BuildBackend
+    displayName: 'Build Django Backend'
+    steps:
+    - checkout: self
+    
+    - task: UsePythonVersion@0
+      displayName: 'Use Python $(pythonVersion)'
+      inputs:
+        versionSpec: '$(pythonVersion)'
+    
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install Python dependencies'
+    
+    - script: |
+        cd $(backendPath)
+        python manage.py collectstatic --noinput
+        python manage.py migrate --noinput
+      displayName: 'Prepare Django static files and database'
+      env:
+        DJANGO_DEBUG: 'False'
+        DJANGO_SECRET_KEY: '$(DJANGO_SECRET_KEY)'
+    
+    - task: ArchiveFiles@2
+      displayName: 'Archive Django backend'
+      inputs:
+        rootFolderOrFile: '$(backendPath)'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/backend.zip
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish backend artifact'
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/backend.zip
+        artifactName: 'backend'
 
-- task: UsePythonVersion@0
-  displayName: 'Use Python $(pythonVersion)'
-  inputs:
-    versionSpec: '$(pythonVersion)'
+  - job: BuildFrontend
+    displayName: 'Build React Frontend'
+    steps:
+    - checkout: self
+    
+    - task: NodeTool@0
+      displayName: 'Use Node.js $(nodeVersion)'
+      inputs:
+        versionSpec: '$(nodeVersion)'
+    
+    - script: |
+        cd $(frontendPath)
+        npm ci
+      displayName: 'Install Node.js dependencies'
+    
+    - script: |
+        cd $(frontendPath)
+        npm run build
+      displayName: 'Build React application'
+      env:
+        CI: false
+        REACT_APP_API_URL: '$(REACT_APP_API_URL)'
+    
+    - task: ArchiveFiles@2
+      displayName: 'Archive React build'
+      inputs:
+        rootFolderOrFile: '$(frontendPath)/build'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/frontend.zip
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish frontend artifact'
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/frontend.zip
+        artifactName: 'frontend'
 
-- script: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-  displayName: 'Install dependencies'
+- stage: Test
+  displayName: 'Run Tests'
+  dependsOn: Build
+  jobs:
+  - job: TestBackend
+    displayName: 'Test Django Backend'
+    steps:
+    - checkout: self
+    
+    - task: UsePythonVersion@0
+      displayName: 'Use Python $(pythonVersion)'
+      inputs:
+        versionSpec: '$(pythonVersion)'
+    
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install Python dependencies'
+    
+    - script: |
+        cd $(backendPath)
+        python manage.py test
+      displayName: 'Run Django tests'
+      env:
+        DJANGO_DEBUG: 'True'
+        DJANGO_SECRET_KEY: 'test-secret-key'
+    
+    - script: |
+        cd $(backendPath)
+        python manage.py runserver 0.0.0.0:8000 &
+        SERVER_PID=$!
+        echo "Waiting for server to start..."
+        sleep 10
+        echo "Health check"
+        curl -f http://127.0.0.1:8000/api/health/ || (echo "Health check failed" && kill $SERVER_PID && exit 1)
+        echo "Shutting down server"
+        kill $SERVER_PID
+      displayName: 'Backend health check'
+      env:
+        DJANGO_DEBUG: 'True'
+        DJANGO_SECRET_KEY: 'test-secret-key'
 
-- script: |
-    cd backend
-    python manage.py migrate --noinput
-    python manage.py collectstatic --noinput
-  displayName: 'Prepare database and static files'
+  - job: TestFrontend
+    displayName: 'Test React Frontend'
+    steps:
+    - checkout: self
+    
+    - task: NodeTool@0
+      displayName: 'Use Node.js $(nodeVersion)'
+      inputs:
+        versionSpec: '$(nodeVersion)'
+    
+    - script: |
+        cd $(frontendPath)
+        npm ci
+      displayName: 'Install Node.js dependencies'
+    
+    - script: |
+        cd $(frontendPath)
+        npm test -- --coverage --ci --watchAll=false
+      displayName: 'Run React tests'
+      env:
+        CI: true
 
-- script: |
-    cd backend
-    python manage.py runserver 0.0.0.0:8000 &
-    SERVER_PID=$!
-    echo "Waiting for server to start..."
-    sleep 6
-    echo "Health check"
-    curl -f http://127.0.0.1:8000/api/health/ || (echo "Health check failed" && kill $SERVER_PID && exit 1)
-    echo "Shutting down server"
-    kill $SERVER_PID
-  displayName: 'Run app and health check' 
+- stage: Deploy
+  displayName: 'Deploy Applications'
+  dependsOn: Test
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployBackend
+    displayName: 'Deploy Django Backend'
+    environment: 'production-backend'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download backend artifact'
+            inputs:
+              artifactName: 'backend'
+              downloadPath: $(Pipeline.Workspace)
+          
+          - task: ExtractFiles@1
+            displayName: 'Extract backend files'
+            inputs:
+              archiveFilePatterns: '$(Pipeline.Workspace)/backend.zip'
+              destinationFolder: '$(Pipeline.Workspace)/backend'
+          
+          # Add your specific deployment steps here
+          # For example, deploying to Azure App Service, AWS, etc.
+
+  - deployment: DeployFrontend
+    displayName: 'Deploy React Frontend'
+    environment: 'production-frontend'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download frontend artifact'
+            inputs:
+              artifactName: 'frontend'
+              downloadPath: $(Pipeline.Workspace)
+          
+          - task: ExtractFiles@1
+            displayName: 'Extract frontend files'
+            inputs:
+              archiveFilePatterns: '$(Pipeline.Workspace)/frontend.zip'
+              destinationFolder: '$(Pipeline.Workspace)/frontend'
+          
+          # Add your specific deployment steps here
+          # For example, deploying to static hosting service 
